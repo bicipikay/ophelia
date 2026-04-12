@@ -2,7 +2,7 @@
   "tilesets": [
     {
       "name": "Mausoleum",
-      "creator": "ophelia",
+      "creator": "Ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1": "Mausoleum/MSLM-wall.png",
@@ -28,7 +28,7 @@
     },
     {
       "name": "Sewer",
-      "creator": "ophelia",
+      "creator": "Ophelia",
       "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "breakable", "fence", "rope", "water", "objectives"],
       "files": {
         "wall1": "Sewer/SWR-wall.png",
@@ -40,7 +40,7 @@
         "breakable": "Sewer/SWR-breakable.png"
       },
       "folders": {
-        "fence": ["SWR-fence.png", "SWR-fence-VALVE.png", "SWR-fenceH.png", "SWR-fenceH-L.png", "SWR-fenceH-R.png", "SWR-fenceH-VALVE.png", "SWR-fenceV.png", "SWR-fenceV-T.png", "SWR-fenceV-B.png", "SWR-fenceV-B-VALVE.png", "SWR-fenceV-TURN-L.png", "SWR-fenceV-TURN-R.png", "SWR-fenceV-TURN2-L.png", "SWR-fenceV-TURN2-R.png"],
+        "fence": ["SWR-fenceH-L.png", "SWR-fenceH.png", "SWR-fenceH-R.png", "SWR-fence.png", "SWR-fence-VALVE.png", "SWR-fenceH-VALVE.png", "SWR-fenceV.png", "SWR-fenceV-T.png", "SWR-fenceV-B.png", "SWR-fenceV-B-VALVE.png", "SWR-fenceV-TURN-L.png", "SWR-fenceV-TURN-R.png", "SWR-fenceV-TURN2-L.png", "SWR-fenceV-TURN2-R.png"],
         "rope": ["SWR-post.png", "SWR-post-H.png", "SWR-post-H-L.png", "SWR-post-H-R.png", "SWR-post-V.png", "SWR-post-V-H.png", "SWR-post-V-L.png", "SWR-post-V-R.png"],
         "water": ["SWR-waterBEND.png", "SWR-waterCORNER.png", "SWR-waterLINE.png", "SWR-water.png", "SWR-waterDOUBLEBEND.png", "SWR-waterDOUBLELINE.png", "SWR-waterFULL.png"],
         "objectives": ["SWR-ball.png", "SWR-safe.png", "SWR-mine.png"]
@@ -50,6 +50,37 @@
         "rope": "Sewer/Rope/",
         "water": "Sewer/Water/",
         "objectives": "Sewer/Objective/"
+      }
+    },
+    {
+      "name": "Halloween",
+      "creator": "PumpkinLucy",
+      "order": ["wall1", "wall2", "crate", "barrel", "cactus", "bush", "bushgreen", "breakable", "fence", "rope", "water", "special", "teleporters", "jumppads"],
+      "files": {
+        "wall1":    "Halloween/Wall1.png",
+        "wall2":    "Halloween/Wall2.png",
+        "crate":    "Halloween/Crate.png",
+        "barrel":   "Halloween/Barrel.png",
+        "cactus":   "Halloween/Cactus.png",
+        "bush":     "Halloween/Bush.png",
+        "bushgreen":"Halloween/BushGreen.png",
+        "breakable":"Halloween/Breakable.png"
+      },
+      "folders": {
+        "fence":      ["Fence1.png", "Fence2.png", "Fence3.png"],
+        "rope":       ["RopeConnects.png", "RopeStandalone.png"],
+        "water":      ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png", "WaterBubble1.png", "WaterBubble2.png"],
+        "special":    ["SlowTile.png", "SpeedTile.png"],
+        "teleporters":["BlueTeleporter.png", "GreenTeleporter.png", "RedTeleporter.png", "YellowTeleporter.png"],
+        "jumppads":   ["DiagonalJumppad.png", "StraightJumppad.png"]
+      },
+      "folderPaths": {
+        "fence":      "Halloween/Fence/",
+        "rope":       "Halloween/Rope/",
+        "water":      "Halloween/Water/",
+        "special":    "Halloween/Special/",
+        "teleporters":"Halloween/Teleporters/",
+        "jumppads":   "Halloween/Jumppads/"
       }
     },
     {
@@ -66,7 +97,7 @@
         "breakable": "Cafe/Skull.png"
       },
       "folders": {
-        "fence": ["B.png", "BR.png", "L.png", "M.png", "T.png", "TR.png", "V.png"],
+        "fence": ["L.png", "M.png", "V.png", "BR.png", "TR.png", "T.png", "B.png"],
         "water": ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png"]
       },
       "folderPaths": {
@@ -90,7 +121,7 @@
       "folders": {
         "fence": ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png", "9.png", "10.png"],
         "rope": ["1.png", "2.png", "3.png", "4.png", "5.png", "6.png", "7.png", "8.png"],
-        "water": ["WaterCurve.png", "WaterFill.png", "WaterLine.png", "WaterTwist.png"]
+        "water": ["WaterCurve.png", "WaterTwist.png", "WaterLine.png", "WaterFill.png"]
       },
       "folderPaths": {
         "fence": "Pharmacy/Fence/",
