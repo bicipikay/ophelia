@@ -412,8 +412,10 @@ function App() {
   const exploreModeRef = useRef(false);
   const [explorePicker, setExplorePicker] = useState(null); // { r, c, siblings, x, y, forHighlight }
   const [highlightMode, setHighlightMode] = useState(false);
-  const [highlightedCells, setHighlightedCells] = useState(new Set()); // Set of "r,c" strings
+  const [highlightedCells, setHighlightedCells] = useState(new Set()); // Set of "r,c" strings — primary + mirror
   const highlightedCellsRef = useRef(new Set()); // mirror for closures
+  const [primaryHighlightedCells, setPrimaryHighlightedCells] = useState(new Set()); // only cells the user actually drew
+  const primaryHighlightedCellsRef = useRef(new Set());
   const [highlightDragOffset, setHighlightDragOffset] = useState(null); // {dr, dc} cell offset while dragging highlight
   const highlightDragOffsetRef = useRef(null);
   const [duplicateMode, setDuplicateMode] = useState(false);
@@ -604,8 +606,17 @@ function App() {
   useEffect(() => { rotateModeRef.current = rotateMode; }, [rotateMode]);
   useEffect(() => { exploreModeRef.current = exploreMode; }, [exploreMode]);
   useEffect(() => { highlightedCellsRef.current = highlightedCells; }, [highlightedCells]);
+  useEffect(() => { primaryHighlightedCellsRef.current = primaryHighlightedCells; }, [primaryHighlightedCells]);
   useEffect(() => { highlightDragOffsetRef.current = highlightDragOffset; }, [highlightDragOffset]);
   useEffect(() => { duplicateModeRef.current = duplicateMode; }, [duplicateMode]);
+  useEffect(() => {
+    if (highlightedCells.size === 0 && duplicateMode) {
+      setDuplicateMode(false);
+      setHighlightDragOffset(null);
+      highlightDragOffsetRef.current = null;
+      highlightDragAnchorCell.current = null;
+    }
+  }, [highlightedCells.size, duplicateMode]);
   useEffect(() => { zoomRef.current         = zoom;          }, [zoom]);
   useEffect(() => { selectionModeRef.current = selectionMode; }, [selectionMode]);
   useEffect(() => { gridRef.current = grid; }, [grid]);
@@ -714,13 +725,11 @@ function App() {
     const s = t.src;
     // Spawns
     if (s.includes("Spawns/")) return 1.65;
-    // Airport crate → 1.05×
-    if (s.includes("AIRP-crate")) return 1.05;
     // Barrel: Sewer 1.05×, Mausoleum/default 1.1×
     if (s.includes("SWR-barrel")) return 1.05;
     if (s.includes("barrel") || s.includes("MSLM-barrel")) return 1.1;
-    // Breakable (MSLM-break only, NOT Unbreakable)
-    if (s.includes("MSLM-break") || (s.includes("break") && !s.includes("Unbreakable"))) return 1.1;
+    // Breakable (MSLM-break only, NOT Unbreakable, NOT AIRP)
+    if (s.includes("MSLM-break") || s.includes("SWR-breakable") || (s.includes("break") && !s.includes("Unbreakable") && !s.includes("AIRP"))) return 1.1;
     // Jumppads & Teleporters & HealPad → 2x
     if (s.includes("Jumppads/") || s.includes("Teleporters/") || s.includes("HealPad")) return 2.0;
     // Hot Zone
@@ -777,7 +786,7 @@ function App() {
     // Airport (wall2 must be checked before wall since "AIRP-wall" matches both)
     if (s.includes("AIRP-wall2"))  return { ox: 0, oy: -20 };
     if (s.includes("AIRP-wall"))   return { ox: 0, oy: -4 };
-    if (s.includes("AIRP-crate"))  return { ox: 0, oy: -4 };
+    if (s.includes("AIRP-crate"))  return { ox: 0, oy: -10 };
     if (s.includes("AIRP-cactus")) return { ox: 0, oy: -10 };
     if (s.includes("AIRP-bush"))   return { ox: 0, oy: -10 };
     // Airport fence (AIRP-fence-V checked before generic fence path)
@@ -1316,13 +1325,15 @@ function App() {
 
   // Grid with history
   const setGrid = useCallback((updater, skipHistory = false) => {
+    const snapLabel = histLabelRef.current || "Draw";
+    if (!skipHistory) histLabelRef.current = "Draw";
     setGridRaw(prev => {
       const next = typeof updater === "function" ? updater(prev) : updater;
       if (!skipHistory) {
         setHistory(h => {
           const trimmed = h.slice(0, histIdx + 1);
           const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
+          return [...capped, { grid: next, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: snapLabel }];
         });
         setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
       }
@@ -1346,6 +1357,11 @@ function App() {
       const s = new Set(snap.highlight);
       setHighlightedCells(s);
       highlightedCellsRef.current = s;
+      const sp = new Set(snap.primaryHighlight ?? snap.highlight);
+      setPrimaryHighlightedCells(sp);
+      primaryHighlightedCellsRef.current = sp;
+      setHighlightMode(s.size > 0);
+      highlightModeRef.current = s.size > 0;
     }
     // Always clear any in-progress highlight drag when restoring a snapshot
     setHighlightDragOffset(null);
@@ -1370,26 +1386,13 @@ function App() {
     }
   };
 
-  // Apply a duplicate: place copy of highlighted cells at current drag-offset position, with mirroring
+  // Apply a duplicate: place copy of primary highlighted cells at current drag-offset position, with mirroring
   const applyDuplicate = useCallback(() => {
     const offset = highlightDragOffsetRef.current;
     if (!offset || (offset.dr === 0 && offset.dc === 0)) return;
     const { dr, dc } = offset;
-    const anchorCell = highlightDragAnchorCell.current ?? [0, 0];
-    const [ar, ac] = anchorCell;
-    const cR = (gridHRef.current - 1) / 2;
-    const cC = (gridWRef.current - 1) / 2;
-    const anchorRowSign = ar < cR ? -1 : (ar > cR ? 1 : 0);
-    const anchorColSign = ac < cC ? -1 : (ac > cC ? 1 : 0);
-    const getEffDelta = (r, c) => {
-      if (!mirrorVRef.current && !mirrorHRef.current && !mirrorDRef.current) return { dr, dc };
-      const crs = r < cR ? -1 : (r > cR ? 1 : 0);
-      const ccs = c < cC ? -1 : (c > cC ? 1 : 0);
-      const flipR = (mirrorHRef.current || mirrorDRef.current) && anchorRowSign !== 0 && crs !== 0 && crs !== anchorRowSign;
-      const flipC = (mirrorVRef.current || mirrorDRef.current) && anchorColSign !== 0 && ccs !== 0 && ccs !== anchorColSign;
-      return { dr: flipR ? -dr : dr, dc: flipC ? -dc : dc };
-    };
-    const oldCells = [...highlightedCellsRef.current];
+    // Only iterate primary cells — mirror placement is handled by getMirrorMetaFn below
+    const oldCells = [...primaryHighlightedCellsRef.current];
     const ms = mirrorSettingsRef.current;
     const getMirrorMetaFn = getMirrorMetaRef.current;
     const currentGrid = gridRef.current;
@@ -1405,8 +1408,7 @@ function App() {
       const srcFlip = gridFlipsRef.current[key] ?? 0;
       const tile = tiles.find(t => t.id === id);
       const isRotatable = tile ? isTileRotatable(tile) : false;
-      const { dr: eDr, dc: eDc } = getEffDelta(r, c);
-      const newR = r + eDr, newC = c + eDc;
+      const newR = r + dr, newC = c + dc;
       if (newR < 0 || newR >= gridHRef.current || newC < 0 || newC >= gridWRef.current) return;
       const placements = [];
       const primaryKey = `${newR},${newC}`;
@@ -1431,7 +1433,7 @@ function App() {
         if (flip) newFlips[`${nr},${nc}`] = flip; else delete newFlips[`${nr},${nc}`];
       });
     });
-    histLabelRef.current = "Duplicate";
+    histLabelRef.current = "Duplicate Place";
     if (pushHistRef.current) pushHistRef.current();
     setGridStableRef.current(() => newG, true);
     setGridRotations(newRots); gridRotationsRef.current = newRots;
@@ -1679,7 +1681,7 @@ function App() {
   const ATLAS_SUBFOLDERS = ["Fence", "Rope", "Water", "Gamemode_Specifics"];
   const ATLAS_TILES_FOLDER = "Tiles";
   const ATLAS_WATER_FILES    = ["00001011.png", "01111111.png", "01101011.png", "11111111.png"];
-  const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Bush2.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
+  const ATLAS_TILES_FILES    = ["Barrel.png", "Bush.png", "Cactus.png", "Crate.png", "Skull.png", "Wall.png", "Wall2.png"];
   const ATLAS_ROPE_FILES     = ["Post.png", "Post_R.png", "Post_T.png", "Post_TR.png"];
   const ATLAS_FENCE_SIMPLE_FILES  = ["Fence.png", "Horizontal.png", "Vertical.png"];
   const ATLAS_FENCE_COMPLEX_FILES = ["0001.png", "0010.png", "0011.png", "0100.png", "0101.png", "1000.png", "1001.png", "1010.png", "1100.png", "Fence.png"];
@@ -1884,6 +1886,24 @@ function App() {
     if (!cells.length) return;
     const tileId   = selRef.current;
     const isEraser = eraserRef.current;
+    // Set descriptive history label
+    if (isEraser) {
+      histLabelRef.current = "Erase";
+    } else if (tileId === SPACE_TILE_ID) {
+      histLabelRef.current = "Draw Space";
+    } else if (tileId === WARN_TILE_ID) {
+      histLabelRef.current = "Draw Warn";
+    } else if (tileId !== null) {
+      const paintTile = tiles.find(t => t.id === tileId);
+      if (paintTile) {
+        const name = paintTile.folderLabel
+          ?? deriveCodename(paintTile.src)
+          ?? (paintTile.codename ?? '').split('_').slice(1).join('-')
+          ?? paintTile.src?.split('/').pop().replace(/\.[^.]+$/, '');
+        const ts = paintTile.tilesetName ?? paintTile.atlasTilesetName ?? null;
+        histLabelRef.current = ts ? `Draw ${name} (${ts})` : (name ? `Draw ${name}` : "Draw");
+      }
+    }
     const rot      = tileId ? ((cardRotationsRef.current[tileId] ?? 0) / 90 % 4) : 0;
     const ms       = mirrorSettingsRef.current;
     const placedMeta = [];
@@ -1981,6 +2001,11 @@ function App() {
         newCells = [...hoveredTilesRef.current].map(k => k.split(',').map(Number));
       }
       if (newCells.length) {
+        // Track primary cells (only what the user drew — no mirrors)
+        const primaryFinal = new Set(primaryHighlightedCellsRef.current);
+        newCells.forEach(([r, c]) => primaryFinal.add(`${r},${c}`));
+        setPrimaryHighlightedCells(primaryFinal);
+        primaryHighlightedCellsRef.current = primaryFinal;
         // Apply mirroring: include mirror positions of each highlighted cell
         const getMirror = getMirrorRef.current;
         const mirroredCells = [];
@@ -2002,7 +2027,7 @@ function App() {
         setHistory(h => {
           const trimmed = h.slice(0, selNextIdx);
           const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-          return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], rots: gridRotationsRef.current, flips: gridFlipsRef.current }];
+          return [...capped, { grid: gridRef.current, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...finalHighlight], primaryHighlight: [...primaryFinal], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: "Highlight" }];
         });
         setHistIdx(selNextIdx);
       }
@@ -2060,9 +2085,13 @@ function App() {
   // BFS flood fill — returns Set of "r,c" strings
   // matchById=false: match all connected filled/empty cells (default behaviour)
   // matchById=true:  match only cells with the same tile ID as the origin (for highlight+fill and block-overwrite+fill)
-  const bfsFill = useCallback((startR, startC, currentGrid, gW, gH, matchById = false) => {
+  const bfsFill = useCallback((startR, startC, currentGrid, gW, gH, matchById = false, matchByFolder = false) => {
     const originId = currentGrid[startR]?.[startC] ?? null;
     const originFilled = originId !== null;
+    const originTile = (matchByFolder && originId !== null) ? tiles.find(t => t.id === originId) : null;
+    const originFolderKey = originTile
+      ? (originTile.folderKey ?? (originTile.atlasTilesetGroup ? `atlas_${originTile.atlasTilesetGroup}` : null))
+      : null;
     const visited = new Set();
     const queue = [[startR, startC]];
     visited.add(`${startR},${startC}`);
@@ -2074,7 +2103,21 @@ function App() {
         const key = `${nr},${nc}`;
         if (visited.has(key)) continue;
         const cellId = currentGrid[nr]?.[nc] ?? null;
-        const matches = matchById ? (cellId === originId) : ((cellId !== null) === originFilled);
+        let matches;
+        if (matchByFolder && originFolderKey !== null) {
+          if (cellId === null) { matches = false; }
+          else {
+            const cellTile = tiles.find(t => t.id === cellId);
+            const cellFolderKey = cellTile
+              ? (cellTile.folderKey ?? (cellTile.atlasTilesetGroup ? `atlas_${cellTile.atlasTilesetGroup}` : null))
+              : null;
+            matches = cellFolderKey !== null && cellFolderKey === originFolderKey;
+          }
+        } else if (matchById) {
+          matches = cellId === originId;
+        } else {
+          matches = (cellId !== null) === originFilled;
+        }
         if (matches) {
           visited.add(key);
           queue.push([nr, nc]);
@@ -2082,7 +2125,7 @@ function App() {
       }
     }
     return visited;
-  }, []);
+  }, [tiles]);
 
   useEffect(() => { bfsFillRef.current = bfsFill; }, [bfsFill]);
 
@@ -2103,17 +2146,37 @@ function App() {
           setSel(pickedId);
           setEraser(false);
           setHandMode(false);
-          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
         }
         setEyedropperMode(false);
         return;
       }
 
       // ── HIGHLIGHT / DUPLICATE MODE ───────────────────────────────────────────
+      // Erase from highlight: clicking a primary highlighted cell removes it from the selection
+      if (eraserRef.current && highlightModeRef.current && highlightedCellsRef.current.size > 0) {
+        const key = `${r},${c}`;
+        if (primaryHighlightedCellsRef.current.has(key)) {
+          const newPrimary = new Set(primaryHighlightedCellsRef.current);
+          newPrimary.delete(key);
+          const newAll = new Set();
+          const getMirrorFn = getMirrorMetaRef.current;
+          newPrimary.forEach(pk => {
+            newAll.add(pk);
+            const [pr, pc] = pk.split(',').map(Number);
+            if (getMirrorFn) getMirrorFn(pr, pc).forEach(({ pos: [mr, mc] }) => newAll.add(`${mr},${mc}`));
+          });
+          setPrimaryHighlightedCells(newPrimary);
+          primaryHighlightedCellsRef.current = newPrimary;
+          setHighlightedCells(newAll);
+          highlightedCellsRef.current = newAll;
+        }
+        return;
+      }
       if (highlightModeRef.current || duplicateModeRef.current) {
         const key = `${r},${c}`;
-        if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
-          // Start dragging the highlight region
+        if (primaryHighlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Start dragging the highlight region (only from primary cells)
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
           setHighlightDragOffset({ dr: 0, dc: 0 });
@@ -2132,7 +2195,7 @@ function App() {
           else if (mode === 'rect') setRectPreview({ r1: r, c1: c, r2: r, c2: c });
           else if (mode === 'fill') {
             const originId = gridRef.current?.[r]?.[c] ?? null;
-            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null);
+            const fillSet = bfsFill(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
             hoveredTilesRef.current = fillSet;
             setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
           }
@@ -2512,13 +2575,22 @@ function App() {
           const newHighlight = new Set(newCells.map(({ newR, newC }) => `${newR},${newC}`));
           setHighlightedCells(newHighlight);
           highlightedCellsRef.current = newHighlight;
+          // Move primary cells by plain (dr, dc)
+          const newPrimaryHighlight = new Set();
+          [...primaryHighlightedCellsRef.current].forEach(key => {
+            const [pr, pc] = key.split(',').map(Number);
+            const nr = pr + dr, nc = pc + dc;
+            if (nr >= 0 && nr < gridHRef.current && nc >= 0 && nc < gridWRef.current) newPrimaryHighlight.add(`${nr},${nc}`);
+          });
+          setPrimaryHighlightedCells(newPrimaryHighlight);
+          primaryHighlightedCellsRef.current = newPrimaryHighlight;
           // Push post-drag snapshot; synchronous histIdxRef update prevents stale-ref trimming
           const dragNextIdx = Math.min(histIdxRef.current + 1, MAX_HISTORY - 1);
           histIdxRef.current = dragNextIdx;
           setHistory(h => {
             const trimmed = h.slice(0, dragNextIdx);
             const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
-            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], rots: postDragRots, flips: postDragFlips }];
+            return [...capped, { grid: newG, w: gridWRef.current, h: gridHRef.current, tileset: activeTilesetRef.current, shownTilesets: shownTilsetsRef.current, shownAtlasTilesets: shownAtlasTilesetsRef.current, bg1: bg1Ref.current, bg2: bg2Ref.current, highlight: [...newHighlight], primaryHighlight: [...newPrimaryHighlight], rots: postDragRots, flips: postDragFlips, label: "Move" }];
           });
           setHistIdx(dragNextIdx);
         }
@@ -2676,7 +2748,7 @@ function App() {
           setSel(pickedId);
           setEraser(false);
           setHandMode(false);
-          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+          setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
         }
         setEyedropperMode(false);
         return;
@@ -2685,8 +2757,8 @@ function App() {
       // ── HIGHLIGHT / DUPLICATE MODE ─────────────────────────────────
       if (highlightModeRef.current || duplicateModeRef.current) {
         const key = `${r},${c}`;
-        if (highlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
-          // Tap on a highlighted cell → start dragging the region
+        if (primaryHighlightedCellsRef.current.has(key) && highlightedCellsRef.current.size > 0) {
+          // Tap on a primary highlighted cell → start dragging the region
           isHighlightDraggingRef.current = true;
           highlightDragAnchorCell.current = [r, c];
           setHighlightDragOffset({ dr: 0, dc: 0 });
@@ -2706,7 +2778,7 @@ function App() {
             const bfs = bfsFillRef.current;
             if (bfs) {
               const originId = gridRef.current?.[r]?.[c] ?? null;
-              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null);
+              const fillSet = bfs(r, c, gridRef.current, gridWRef.current, gridHRef.current, originId !== null, true);
               hoveredTilesRef.current = fillSet;
               setPreviewCells([...fillSet].map(k => k.split(',').map(Number)));
             }
@@ -3034,16 +3106,15 @@ function App() {
         const tag = e.target.tagName;
         if (tag === "INPUT" || tag === "TEXTAREA" || e.target.isContentEditable) return;
         if (e.key === "Escape" && highlightModeRef.current) {
-          setHighlightedCells(new Set());
-          highlightedCellsRef.current = new Set();
+          setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
         }
         if (e.key === " " && highlightModeRef.current) {
           e.preventDefault();
           setHighlightedCells(new Set());
           highlightedCellsRef.current = new Set();
         }
-        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
-        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }
+        if (e.key === "e" || e.key === "E") { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
+        if (e.key === "w" || e.key === "W") { setEyedropperMode(true); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }
         if (e.key === "r" || e.key === "R") {
           const id = selRef.current;
           if (id != null) {
@@ -3286,7 +3357,7 @@ function App() {
     const [multInput,      setMultInput]      = React.useState(String(currentMult));
     const [oxInput,        setOxInput]        = React.useState(String(currentOff.ox));
     const [oyInput,        setOyInput]        = React.useState(String(currentOff.oy));
-    const [codenameInput,  setCodenameInput]  = React.useState(tileNames[t.id] !== undefined ? tileNames[t.id] : defaultCodename_);
+    const [codenameInput,  setCodenameInput]  = React.useState(tileNames[t.id] || defaultCodename_);
     const isPriority = !!priorityTiles[t.id];
 
     const commitMult = val => {
@@ -3356,7 +3427,13 @@ function App() {
             <span style={{ fontSize: 11, color: C.muted, width: 100, flexShrink: 0 }}>Codename</span>
             <input value={codenameInput}
               onChange={e => setCodenameInput(e.target.value)}
-              onBlur={() => setTileNames(prev => ({ ...prev, [t.id]: codenameInput }))}
+              onBlur={() => {
+                if (codenameInput === '') {
+                  setTileNames(prev => { const n = { ...prev }; delete n[t.id]; return n; });
+                } else {
+                  setTileNames(prev => ({ ...prev, [t.id]: codenameInput }));
+                }
+              }}
               onKeyDown={e => { if (e.key === "Enter") e.target.blur(); }}
               placeholder={defaultCodename_ || "Enter codename…"}
               style={{ flex: 1, background: "rgba(180,40,40,0.09)", border: `1px solid ${C.border}`, borderRadius: 5, color: C.text, fontFamily: "monospace", fontSize: 12, padding: "4px 6px", outline: "none" }} />
@@ -4040,6 +4117,7 @@ function App() {
       Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
       // Index trackers for folder-based matching
       const folderIdx = {};
+      const usedAtlasIds = new Set();
 
       for (const [key, opheliaIds] of Object.entries(opheliaKeyMap)) {
         opheliaIds.forEach(oid => fromIds.add(oid));
@@ -4048,6 +4126,7 @@ function App() {
         const flatMatch = atlasByNorm[norm] ?? atlasByNorm[norm === 'breakable' ? 'skull' : norm === 'skull' ? 'breakable' : ''];
         if (flatMatch) {
           opheliaIds.forEach(oid => { remap[oid] = flatMatch.id; });
+          usedAtlasIds.add(flatMatch.id);
           continue;
         }
         // Identify folder type from key prefix (Fence/Rope/Water/objectives)
@@ -4064,10 +4143,13 @@ function App() {
           const nameMatch = folderTiles.find(t => normCode(t.baseCodename) === norm);
           if (nameMatch) {
             opheliaIds.forEach(oid => { remap[oid] = nameMatch.id; });
+            usedAtlasIds.add(nameMatch.id);
           } else {
+            const availTiles = folderTiles.filter(t => !usedAtlasIds.has(t.id));
             const idx = folderIdx[folderName] ?? 0;
-            if (idx < folderTiles.length) {
-              opheliaIds.forEach(oid => { remap[oid] = folderTiles[idx].id; });
+            if (idx < availTiles.length) {
+              opheliaIds.forEach(oid => { remap[oid] = availTiles[idx].id; });
+              usedAtlasIds.add(availTiles[idx].id);
               folderIdx[folderName] = idx + 1;
             }
           }
@@ -4146,9 +4228,10 @@ function App() {
           if (nameMatch) {
             opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
           } else {
+            const availTiles = folderTiles.filter(t => idRemap[t.id] === undefined);
             const idx = folderIdx[folderName] ?? 0;
-            if (idx < folderTiles.length) {
-              opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
+            if (idx < availTiles.length) {
+              opheliaIds.forEach(oid => { idRemap[availTiles[idx].id] = oid; });
               folderIdx[folderName] = idx + 1;
             }
           }
@@ -4539,7 +4622,7 @@ function App() {
                           if (fMode === 'flip' && canFlipF) { setCardFlipSteps(prev => ({ ...prev, [t.id]: ((prev[t.id] ?? 0) + 1) % 4 })); }
                           else if (fMode !== 'flip' && canSpinF) { setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 })); }
                         }
-                        setSel(t.id); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+                        setSel(t.id); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                       }}
                       style={{ width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer",
                         border: `2px solid ${failed ? C.danger : active ? C.accentBright : C.border}`,
@@ -4690,13 +4773,19 @@ function App() {
                                       let newGrid = gridRef.current;
                                       if (manifest) {
                                         const tilesets = manifest.tilesets ?? [];
+                                        const WATER_CNS_D = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
                                         let cid = TILESET_ID_START;
                                         const maps = {};
                                         for (const tsDef of tilesets) {
                                           const m = {};
                                           for (const key of (tsDef.order ?? [])) {
-                                            if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
-                                            else if (tsDef.files?.[key]) m[key] = [cid++];
+                                            if (tsDef.folders?.[key]) {
+                                              if (key === "water") {
+                                                tsDef.folders[key].forEach((_, i) => { m[WATER_CNS_D[i] ?? `water${i}`] = [cid++]; });
+                                              } else {
+                                                m[key] = tsDef.folders[key].map(() => cid++);
+                                              }
+                                            } else if (tsDef.files?.[key]) m[key] = [cid++];
                                           }
                                           maps[tsDef.name] = m;
                                         }
@@ -4733,10 +4822,16 @@ function App() {
                                             if (folderMatch) {
                                               const folderName = folderMatch[1];
                                               const folderTiles = atlasByFolder[folderName] ?? [];
-                                              const idx = folderIdx[folderName] ?? 0;
-                                              if (idx < folderTiles.length) {
-                                                opheliaIds.forEach(oid => { idRemap[folderTiles[idx].id] = oid; });
-                                                folderIdx[folderName] = idx + 1;
+                                              const nameMatch = folderTiles.find(t => normC(t.baseCodename) === n);
+                                              if (nameMatch) {
+                                                opheliaIds.forEach(oid => { idRemap[nameMatch.id] = oid; });
+                                              } else {
+                                                const availTiles = folderTiles.filter(t => idRemap[t.id] === undefined);
+                                                const idx = folderIdx[folderName] ?? 0;
+                                                if (idx < availTiles.length) {
+                                                  opheliaIds.forEach(oid => { idRemap[availTiles[idx].id] = oid; });
+                                                  folderIdx[folderName] = idx + 1;
+                                                }
                                               }
                                             }
                                           }
@@ -4761,7 +4856,7 @@ function App() {
                                       const tsBg = getTilesetBgColors(ts.name);
                                       const newBg1 = tsBg ? tsBg.bg1 : bg1Ref.current;
                                       const newBg2 = tsBg ? tsBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: ts.name, shownTilesets: [ts.name], shownAtlasTilesets: [], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${ts.name}` };
                                       setHistory(h => {
                                         const trimmed = h.slice(0, histIdxRef.current + 1);
                                         const capped  = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed;
@@ -4833,15 +4928,21 @@ function App() {
                                         ["mine","Gamemode_Specifics"],["gem","Gamemode_Specifics"],
                                         ["obj","Gamemode_Specifics"],["skull","Gamemode_Specifics"],
                                       ];
-                                      // Build Ophelia ID maps
+                                      // Build Ophelia ID maps (with per-variant water keys)
                                       const opheliaTsDefs = manifest?.tilesets ?? [];
+                                      const WATER_CNS_D = ["waterbend","watercorner","waterline","waterfill","waterdoublebend","waterdoubleline","waterfull"];
                                       let cid = TILESET_ID_START;
                                       const opheliaIdMaps = {};
                                       for (const tsDef of opheliaTsDefs) {
                                         const m = {};
                                         for (const key of (tsDef.order ?? [])) {
-                                          if (tsDef.folders?.[key]) m[key] = tsDef.folders[key].map(() => cid++);
-                                          else if (tsDef.files?.[key]) m[key] = [cid++];
+                                          if (tsDef.folders?.[key]) {
+                                            if (key === "water") {
+                                              tsDef.folders[key].forEach((_, i) => { m[WATER_CNS_D[i] ?? `water${i}`] = [cid++]; });
+                                            } else {
+                                              m[key] = tsDef.folders[key].map(() => cid++);
+                                            }
+                                          } else if (tsDef.files?.[key]) m[key] = [cid++];
                                         }
                                         opheliaIdMaps[tsDef.name] = m;
                                       }
@@ -4864,6 +4965,7 @@ function App() {
                                         });
                                         Object.values(atlasByFolder).forEach(arr => arr.sort((a, b) => a.id - b.id));
                                         const folderIdx = {};
+                                        const usedAtlasIds = new Set();
                                         const idRemap = {};
                                         const fromAll = new Set();
                                         for (const [key, opheliaIds] of Object.entries(fromMap)) {
@@ -4871,12 +4973,19 @@ function App() {
                                           const n = normC(key);
                                           const aliasN = n === 'breakable' ? 'skull' : n === 'skull' ? 'breakable' : null;
                                           const flatM = atlasByNorm[n] ?? (aliasN ? atlasByNorm[aliasN] : undefined);
-                                          if (flatM) { opheliaIds.forEach(oid => { idRemap[oid] = flatM.id; }); continue; }
+                                          if (flatM) { opheliaIds.forEach(oid => { idRemap[oid] = flatM.id; }); usedAtlasIds.add(flatM.id); continue; }
                                           const fm = FOLDER_PFXS.find(([p]) => n.startsWith(p));
                                           if (fm) {
                                             const ftiles = atlasByFolder[fm[1]] ?? [];
-                                            const idx = folderIdx[fm[1]] ?? 0;
-                                            if (idx < ftiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = ftiles[idx].id; }); folderIdx[fm[1]] = idx + 1; }
+                                            const nameMatch = ftiles.find(t => normC(t.baseCodename) === n);
+                                            if (nameMatch) {
+                                              opheliaIds.forEach(oid => { idRemap[oid] = nameMatch.id; });
+                                              usedAtlasIds.add(nameMatch.id);
+                                            } else {
+                                              const availTiles = ftiles.filter(t => !usedAtlasIds.has(t.id));
+                                              const idx = folderIdx[fm[1]] ?? 0;
+                                              if (idx < availTiles.length) { opheliaIds.forEach(oid => { idRemap[oid] = availTiles[idx].id; }); usedAtlasIds.add(availTiles[idx].id); folderIdx[fm[1]] = idx + 1; }
+                                            }
                                           }
                                         }
                                         newGrid = gridRef.current.map(row => row.map(id => (id != null && fromAll.has(id) && idRemap[id] !== undefined) ? idRemap[id] : id));
@@ -4895,7 +5004,7 @@ function App() {
                                       const cachedBg = getTilesetBgColors(atsDef.name);
                                       const newBg1 = cachedBg ? cachedBg.bg1 : bg1Ref.current;
                                       const newBg2 = cachedBg ? cachedBg.bg2 : bg2Ref.current;
-                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current };
+                                      const snap = { grid: newGrid, w: gridWRef.current, h: gridHRef.current, tileset: atsDef.name, shownTilesets: [], shownAtlasTilesets: [atsDef.name], bg1: newBg1, bg2: newBg2, highlight: [...highlightedCellsRef.current], rots: gridRotationsRef.current, flips: gridFlipsRef.current, label: `Switch to ${atsDef.name}` };
                                       setHistory(h => { const trimmed = h.slice(0, histIdxRef.current + 1); const capped = trimmed.length >= MAX_HISTORY ? trimmed.slice(1) : trimmed; return [...capped, snap]; });
                                       setHistIdx(i => Math.min(i + 1, MAX_HISTORY - 1));
                                       setGridRaw(newGrid);
@@ -4969,7 +5078,7 @@ function App() {
                               setCardRotations(prev => ({ ...prev, [t.id]: (prev[t.id] ?? 0) + 90 }));
                             }
                           }
-                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+                          setSel(t.id); setEraser(false); setHandMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }}
                         style={{ flexShrink: 0, width: cardSz, height: cardSz, borderRadius: 8, cursor: failed ? "not-allowed" : "pointer", border: `${active ? 3 : 2}px solid ${failed ? C.danger : active ? C.accentBright : C.border}`, boxShadow: active ? `0 0 0 1px ${C.accentBright}44` : "none", background: failed ? "rgba(248,113,113,0.08)" : active ? C.accentDim : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s, box-shadow 0.12s", opacity: failed ? 0.55 : 1, position: "relative", overflow: "visible" }}>
                         {/* Inner clipped area for image */}
@@ -5047,15 +5156,29 @@ function App() {
                   {/* 1. Eraser */}
                   {(() => {
                     const isStarredErase = starredTiles.includes("erase");
+                    const hlActive = highlightedCells.size > 0;
+                    const eraseHlHint = !eraser && hlActive; // subtle hint when highlight is on
+                    const eraseHlOn   = eraser && hlActive;  // erase-from-highlight mode active
+                    const eraseBorder  = eraser ? "#f87171" : eraseHlHint ? "rgba(167,139,250,0.32)" : C.border;
+                    const eraseBg      = eraser ? "rgba(248,113,113,0.22)" : eraseHlHint ? "rgba(167,139,250,0.04)" : "rgba(255,255,255,0.03)";
+                    const eraseHdrBg   = eraser ? "rgba(248,113,113,0.38)" : eraseHlHint ? "rgba(167,139,250,0.08)" : "rgba(248,113,113,0.18)";
+                    const eraseLabelC  = eraser ? "#f87171" : eraseHlHint ? "rgba(167,139,250,0.5)" : "rgba(248,113,113,0.8)";
                     return (
-                      <div onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
-                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraser ? "#f87171" : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
+                      <div onClick={() => {
+                        if (hlActive) {
+                          // Erase-from-highlight mode: toggle eraser without clearing the highlight
+                          setEraser(e => !e);
+                        } else {
+                          setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
+                        }
+                      }}
+                        style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eraseBorder}`, background: eraseBg, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraser ? "rgba(248,113,113,0.38)" : "rgba(248,113,113,0.18)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: eraser ? "#f87171" : "rgba(248,113,113,0.8)" }}>Erase</span>
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eraseHdrBg, padding: "2px 4px" }}>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: eraseLabelC }}>{eraseHlOn ? "Deselect" : "Erase"}</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                            <span style={{ fontSize: 20, lineHeight: 1, opacity: eraser ? 1 : 0.55 }}>🧼</span>
+                            <span style={{ fontSize: 20, lineHeight: 1, opacity: (eraser || eraseHlHint) ? 1 : 0.55 }}>🧼</span>
                           </div>
                         </div>
                         <span onClick={e => { e.stopPropagation(); setInfoTool("erase"); }}
@@ -5069,7 +5192,7 @@ function App() {
                     const warnActive = sel === WARN_TILE_ID && !eraser;
                     const isStarredWarn = starredTiles.includes(WARN_TILE_ID);
                     return (
-                      <div onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${warnActive ? "#f97316" : C.border}`, background: warnActive ? "rgba(249,115,22,0.18)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: warnActive ? "rgba(249,115,22,0.38)" : "rgba(249,115,22,0.12)", padding: "2px 4px" }}>
@@ -5089,7 +5212,7 @@ function App() {
                   {(() => {
                     const isStarredHand = starredTiles.includes("hand");
                     return (
-                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: handMode ? "rgba(251,191,36,0.28)" : "rgba(251,191,36,0.08)", padding: "2px 4px" }}>
@@ -5113,7 +5236,7 @@ function App() {
                     const exploreBgColor = exploreMode ? "rgba(154,223,28,0.15)" : exploreHint ? "rgba(154,223,28,0.04)" : "rgba(255,255,255,0.03)";
                     const isStarredExplore = starredTiles.includes("explore");
                     return (
-                      <div onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
+                      <div onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${exploreBorderColor}`, background: exploreBgColor, transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: exploreMode ? `rgba(154,223,28,0.28)` : exploreHint ? `rgba(154,223,28,0.06)` : `rgba(154,223,28,0.08)`, padding: "2px 4px" }}>
@@ -5133,7 +5256,7 @@ function App() {
                   {(() => {
                     const isStarredEyedropper = starredTiles.includes("eyedropper");
                     return (
-                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); if (!eyedropperMode) setSel(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setEyedropperMode(prev => !prev); setEraser(false); setHandMode(false); setRotateMode(false); setExploreMode(false); setExplorePicker(null); if (!eyedropperMode) setSel(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer", border: `2px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.15)" : "rgba(255,255,255,0.03)", transition: "border 0.12s, background 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(57,255,20,0.08)", padding: "2px 4px" }}>
@@ -5154,7 +5277,7 @@ function App() {
                     const isStarredSpace = starredTiles.includes(SPACE_TILE_ID);
                     const spaceActive = sel === SPACE_TILE_ID && !eraser;
                     return (
-                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                      <div onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${spaceActive ? "#60a5fa" : C.border}`,
                           background: spaceActive ? "rgba(96,165,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -5209,7 +5332,7 @@ function App() {
                   {(() => {
                     const isStarredHighlight = starredTiles.includes("highlight");
                     return (
-                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
+                      <div onClick={() => { const turningOn = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setExplorePicker(null); if (turningOn) { setSel(null); } else { setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: "pointer",
                           border: `2px solid ${highlightMode ? "#a78bfa" : C.border}`,
                           background: highlightMode ? "rgba(167,139,250,0.15)" : "rgba(255,255,255,0.03)",
@@ -5224,7 +5347,7 @@ function App() {
                           </div>
                         </div>
                         {highlightMode && highlightedCells.size > 0 && (
-                          <button onClick={e => { e.stopPropagation(); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                          <button onClick={e => { e.stopPropagation(); setDuplicateMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                             style={{ position: "absolute", bottom: -10, left: "50%", transform: "translateX(-50%)", fontSize: 8, fontWeight: 700, color: "#a78bfa", background: "rgba(0,0,0,0.75)", border: "1px solid #a78bfa", borderRadius: 4, padding: "1px 5px", cursor: "pointer", whiteSpace: "nowrap", zIndex: 8, lineHeight: 1.4 }}>
                             ✕ Clear
                           </button>
@@ -5241,6 +5364,7 @@ function App() {
                   {(() => {
                     const dupColor = "#e879a0";
                     const dupEnabled = highlightedCells.size > 0;
+                    const dupHint = !duplicateMode && highlightedCells.size > 0;
                     const hasPending = duplicateMode && highlightDragOffset && (highlightDragOffset.dr !== 0 || highlightDragOffset.dc !== 0);
                     const isStarredDuplicate = starredTiles.includes("duplicate");
                     return (
@@ -5256,14 +5380,14 @@ function App() {
                         }
                       }}
                         style={{ flexShrink: 0, width: cardSz, borderRadius: 8, cursor: (dupEnabled || duplicateMode) ? "pointer" : "not-allowed",
-                          border: `2px solid ${duplicateMode ? dupColor : C.border}`,
-                          background: duplicateMode ? "rgba(232,121,160,0.15)" : "rgba(255,255,255,0.03)",
+                          border: `2px solid ${duplicateMode ? dupColor : dupHint ? "rgba(232,121,160,0.32)" : C.border}`,
+                          background: `${duplicateMode ? "rgba(232,121,160,0.15)" : dupHint ? "rgba(232,121,160,0.05)" : "rgba(255,255,255,0.03)"}`,
                           opacity: (dupEnabled || duplicateMode) ? 1 : 0.32,
                           transition: "border 0.12s, background 0.12s, opacity 0.12s", position: "relative", overflow: "visible" }}>
                         <div style={{ borderRadius: 6, overflow: "hidden" }}>
                           <div style={{ display: "flex", alignItems: "center", justifyContent: "center",
                             background: duplicateMode ? "rgba(232,121,160,0.22)" : "rgba(232,121,160,0.08)", padding: "2px 4px" }}>
-                            <span style={{ fontSize: 9, fontWeight: 700, color: duplicateMode ? dupColor : C.muted }}>Duplicate</span>
+                            <span style={{ fontSize: 9, fontWeight: 700, color: duplicateMode ? dupColor : dupHint ? "rgba(232,121,160,0.45)" : C.muted }}>Dup & Place</span>
                           </div>
                           <div style={{ height: cardSz - 18, background: C.panelDeep, display: "flex", alignItems: "center", justifyContent: "center" }}>
                             <span style={{ fontSize: 20, lineHeight: 1, opacity: duplicateMode ? 1 : (dupEnabled ? 0.55 : 0.2) }}>💞</span>
@@ -5517,7 +5641,7 @@ function App() {
                   {/* Tool shortcuts (starred string IDs: erase, hand, eyedropper, highlight, convert, selectionGroup, mirrorGroup) */}
                   {starredTools.map(sid => {
                   if (sid === "erase") return (
-                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="erase" onClick={() => { setEraser(true); setSel(null); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eraser ? C.danger : C.border}`, background: eraser ? "rgba(248,113,113,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Erase">
@@ -5525,7 +5649,7 @@ function App() {
                     </div>
                   );
                   if (sid === "hand") return (
-                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="hand" onClick={() => { setHandMode(h => !h); setEraser(false); setSel(null); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${handMode ? "#fbbf24" : C.border}`, background: handMode ? "rgba(251,191,36,0.14)" : "rgba(255,255,255,0.04)" }}
                       title="Hand">
@@ -5556,7 +5680,7 @@ function App() {
                     );
                   }
                   if (sid === "eyedropper") return (
-                    <div key="eyedropper" onClick={() => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="eyedropper" onClick={() => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setRotateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${eyedropperMode ? "#39ff14" : C.border}`, background: eyedropperMode ? "rgba(57,255,20,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Eyedropper">
@@ -5564,7 +5688,7 @@ function App() {
                     </div>
                   );
                   if (sid === "highlight") return (
-                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } }}
+                    <div key="highlight" onClick={() => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${highlightMode ? "#a78bfa" : C.border}`, background: highlightMode ? "rgba(167,139,250,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Highlight">
@@ -5580,7 +5704,7 @@ function App() {
                     </div>
                   );
                   if (sid === "explore") return (
-                    <div key="explore" onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
+                    <div key="explore" onClick={() => { const turningOn = !exploreMode; setExploreMode(v => !v); setEraser(false); setHandMode(false); setEyedropperMode(false); setRotateMode(false); setDuplicateMode(false); if (turningOn) { setSel(null); setExplorePicker(null); } }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${exploreMode ? "#9ADF1C" : C.border}`, background: exploreMode ? "rgba(154,223,28,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Explore">
@@ -5613,7 +5737,7 @@ function App() {
                   {/* Tile shortcuts (starred numeric IDs: space tile, folders, regular tiles) */}
                   {starredTileIds.map(sid => {
                   if (sid === SPACE_TILE_ID) return (
-                    <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="space" onClick={() => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${sel === SPACE_TILE_ID && !eraser ? C.accentBright : C.border}`, background: sel === SPACE_TILE_ID && !eraser ? C.accentDim : "rgba(255,255,255,0.04)" }}
                       title="Space">
@@ -5621,7 +5745,7 @@ function App() {
                     </div>
                   );
                   if (sid === WARN_TILE_ID) return (
-                    <div key="warn" onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); }}
+                    <div key="warn" onClick={() => { setSel(WARN_TILE_ID); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); setExploreMode(false); setDuplicateMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
                         border: `1px solid ${sel === WARN_TILE_ID && !eraser ? "#f97316" : C.border}`, background: sel === WARN_TILE_ID && !eraser ? "rgba(249,115,22,0.22)" : "rgba(255,255,255,0.04)" }}
                       title="Warn">
@@ -5669,7 +5793,7 @@ function App() {
                           if (stMode === 'flip' && stCanFlip) { setCardFlipSteps(prev => ({ ...prev, [sid]: ((prev[sid] ?? 0) + 1) % 4 })); }
                           else if (stMode !== 'flip' && stCanSpin) { setCardRotations(prev => ({ ...prev, [sid]: (prev[sid] ?? 0) + 90 })); }
                         }
-                        setSel(sid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+                        setSel(sid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                       }}
                       style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                         border: `1px solid ${active ? C.accentBright : C.border}`, background: active ? C.accentDim : C.panelDeep }}
@@ -5707,7 +5831,7 @@ function App() {
                             if (rcMode === 'flip' && rcCanFlip) { setCardFlipSteps(prev => ({ ...prev, [rid]: ((prev[rid] ?? 0) + 1) % 4 })); }
                             else if (rcMode !== 'flip' && rcCanSpin) { setCardRotations(prev => ({ ...prev, [rid]: (prev[rid] ?? 0) + 90 })); }
                           }
-                          setSel(rid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set();
+                          setSel(rid); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set();
                         }}
                         style={{ width: 32, height: 32, borderRadius: 6, cursor: "pointer", overflow: "hidden", position: "relative",
                           border: `1px solid ${active ? C.accentBright : "rgba(255,255,255,0.25)"}`, background: active ? C.accentDim : C.panelDeep, opacity: 0.75 }}
@@ -6130,48 +6254,50 @@ function App() {
                   );
                 })()}
 
-                {/* Highlight overlay — purple semi-transparent squares over highlighted cells */}
+                {/* Highlight overlay — primary cells full color, mirror shadows pale */}
                 {highlightedCells.size > 0 && (() => {
                   const cellPx = CELL * zoom;
                   const { dr, dc } = highlightDragOffset ?? { dr: 0, dc: 0 };
-                  const dupColor = "#e879a0";
-                  const hlFill = duplicateMode ? "rgba(232,121,160,0.35)" : "rgba(167,139,250,0.35)";
+                  const hlFill   = duplicateMode ? "rgba(232,121,160,0.35)" : "rgba(167,139,250,0.35)";
                   const hlStroke = duplicateMode ? "rgba(232,121,160,0.85)" : "rgba(167,139,250,0.85)";
-                  const dragging = dr !== 0 || dc !== 0;
-                  // Compute per-cell mirrored delta during drag so the mirror side moves opposite direction
-                  const anchorCell = highlightDragAnchorCell.current;
-                  const [ar, ac] = anchorCell ?? [0, 0];
-                  const hcR = (gridH - 1) / 2;
-                  const hcC = (gridW - 1) / 2;
-                  const anchorRowSign = ar < hcR ? -1 : (ar > hcR ? 1 : 0);
-                  const anchorColSign = ac < hcC ? -1 : (ac > hcC ? 1 : 0);
+                  const hlFillM   = duplicateMode ? "rgba(232,121,160,0.11)" : "rgba(167,139,250,0.11)";
+                  const hlStrokeM = duplicateMode ? "rgba(232,121,160,0.28)" : "rgba(167,139,250,0.28)";
+                  // Primary cells at drag-offset positions
+                  const primaryAtNew = new Set();
+                  const primaryRects = [];
+                  primaryHighlightedCells.forEach(key => {
+                    const [origR, origC] = key.split(",").map(Number);
+                    const r = origR + dr, c = origC + dc;
+                    if (r < 0 || r >= gridH || c < 0 || c >= gridW) return;
+                    primaryAtNew.add(`${r},${c}`);
+                    primaryRects.push({ r, c, key });
+                  });
+                  // Mirror ghost positions: getMirrorMeta of each primary at new position
+                  const mirrorSeen = new Set();
+                  const mirrorRects = [];
+                  if (mirrorV || mirrorH || mirrorD) {
+                    primaryHighlightedCells.forEach(key => {
+                      const [origR, origC] = key.split(",").map(Number);
+                      const nr = origR + dr, nc = origC + dc;
+                      if (nr < 0 || nr >= gridH || nc < 0 || nc >= gridW) return;
+                      getMirrorMeta(nr, nc).slice(1).forEach(({ pos: [mr, mc] }) => {
+                        if (mr < 0 || mr >= gridH || mc < 0 || mc >= gridW) return;
+                        const mk = `${mr},${mc}`;
+                        if (!primaryAtNew.has(mk) && !mirrorSeen.has(mk)) {
+                          mirrorSeen.add(mk);
+                          mirrorRects.push({ r: mr, c: mc });
+                        }
+                      });
+                    });
+                  }
                   return (
                     <svg style={{ position: "absolute", left: 0, top: CELL * zoom, width: gW, height: gH, pointerEvents: "none", zIndex: 204, overflow: "visible" }}>
-                      {[...highlightedCells].map(key => {
-                        const [origR, origC] = key.split(",").map(Number);
-                        let effDr = dr, effDc = dc;
-                        if (dragging && (mirrorV || mirrorH || mirrorD)) {
-                          const cellRowSign = origR < hcR ? -1 : (origR > hcR ? 1 : 0);
-                          const cellColSign = origC < hcC ? -1 : (origC > hcC ? 1 : 0);
-                          const flipRow = (mirrorH || mirrorD) && anchorRowSign !== 0 && cellRowSign !== 0 && cellRowSign !== anchorRowSign;
-                          const flipCol = (mirrorV || mirrorD) && anchorColSign !== 0 && cellColSign !== 0 && cellColSign !== anchorColSign;
-                          effDr = flipRow ? -dr : dr;
-                          effDc = flipCol ? -dc : dc;
-                        }
-                        const r = origR + effDr;
-                        const c = origC + effDc;
-                        if (r < 0 || r >= gridH || c < 0 || c >= gridW) return null;
-                        return (
-                          <rect key={key}
-                            x={c * cellPx} y={r * cellPx}
-                            width={cellPx} height={cellPx}
-                            fill={hlFill}
-                            stroke={hlStroke}
-                            strokeWidth="1.5"
-                            rx="2"
-                          />
-                        );
-                      })}
+                      {mirrorRects.map(({ r, c }) => (
+                        <rect key={`m_${r}_${c}`} x={c * cellPx} y={r * cellPx} width={cellPx} height={cellPx} fill={hlFillM} stroke={hlStrokeM} strokeWidth="1.5" rx="2" />
+                      ))}
+                      {primaryRects.map(({ r, c, key }) => (
+                        <rect key={key} x={c * cellPx} y={r * cellPx} width={cellPx} height={cellPx} fill={hlFill} stroke={hlStroke} strokeWidth="1.5" rx="2" />
+                      ))}
                     </svg>
                   );
                 })()}
@@ -6196,7 +6322,7 @@ function App() {
                 convert: "🔄",
               };
               const toolActionMap = {
-                space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); },
+                space: () => { setSel(SPACE_TILE_ID); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
                 single: () => setSelectionMode('single'),
                 line:   () => setSelectionMode('line'),
                 rect:   () => setSelectionMode('rect'),
@@ -6209,8 +6335,8 @@ function App() {
                 replace: () => { setReplaceOpen(true); setReplaceStep(1); setReplaceA(null); setReplaceB(null); setReplaceMsg(""); },
                 overwrite: () => setMirrorSettings(p => ({ ...p, allowSwap: !p.allowSwap })),
                 otg: () => setShowOTG(v => !v),
-                eyedropper: () => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); },
-                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); } },
+                eyedropper: () => { setEyedropperMode(v => !v); setEraser(false); setHandMode(false); setHighlightMode(false); setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); },
+                highlight: () => { const on = !highlightMode; setHighlightMode(h => !h); setEraser(false); setHandMode(false); setRotateMode(false); setEyedropperMode(false); if (!on) { setHighlightedCells(new Set()); highlightedCellsRef.current = new Set(); setPrimaryHighlightedCells(new Set()); primaryHighlightedCellsRef.current = new Set(); } },
                 rotate: () => { setRotateMode(r => !r); setEraser(false); setHandMode(false); setHighlightMode(false); setEyedropperMode(false); },
                 convert: () => setConvertOpen(true),
               };
@@ -6425,11 +6551,20 @@ function App() {
                 })()}
                 <div style={{ height: 1, background: C.border }} />
                 <span style={{ fontSize: 10, color: C.muted, textTransform: "uppercase", letterSpacing: 1, display: "flex", alignItems: "center", gap: 4 }}>Mirroring <span onClick={() => setInfoTool("mirroring")} style={{ fontSize: 11, cursor: "pointer", color: "rgba(255,255,255,0.65)", lineHeight: 1 }}>ⓘ</span></span>
-                <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}>
-                  <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
-                  <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
-                  <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                {(() => { const mirrorLocked = highlightedCells.size > 0; return (
+                <div style={{ position: "relative" }}>
+                  <div style={{ display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center", opacity: mirrorLocked ? 0.55 : 1, pointerEvents: mirrorLocked ? "none" : "auto", transition: "opacity 0.15s" }}>
+                    <button style={btn(mirrorV, C.pale, C.paleDim)} onClick={() => setMirrorV(v => !v)} title="Horizontal mirror (left ↔ right)">Horizontal</button>
+                    <button style={btn(mirrorH, C.soft, C.softDim)} onClick={() => setMirrorH(v => !v)} title="Vertical mirror (top ↔ bottom)">Vertical</button>
+                    <button style={btn(mirrorD, C.accentBright, C.accentDim)} onClick={() => setMirrorD(v => !v)} title="Diagonal mirror (180° rotation)">Diagonal</button>
+                  </div>
+                  {mirrorLocked && (
+                    <div style={{ fontSize: 9, color: C.muted, marginTop: 3, lineHeight: 1.4 }}>
+                      Locked while cells are highlighted — prevents inconsistencies with Highlight/Duplicate tools.
+                    </div>
+                  )}
                 </div>
+                ); })()}
                 <div style={{ height: 1, background: C.border }} />
                 <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                   <div style={{ position: "relative", display: "inline-block", flexShrink: 0 }}>
